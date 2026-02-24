@@ -1,20 +1,51 @@
 import { useState } from "react";
+import axios from "axios";
 
 interface ChatInputProps {
   setMessages: React.Dispatch<
     React.SetStateAction<{ role: string; text: string }[]>
   >;
+  setLoading: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
-export default function ChatInput({ setMessages }: ChatInputProps) {
+const backendAPI = import.meta.env.VITE_BACKEND_URL;
+export default function ChatInput({ setMessages, setLoading }: ChatInputProps) {
   const [input, setInput] = useState("");
 
-  const handleSend = () => {
+  // const [conversationId] = useState<string>(() => crypto.randomUUID());
+  const generateId = () => {
+    return "id-" + Date.now() + "-" + Math.random().toString(36).substring(2);
+  };
+
+  const [conversationId] = useState<string>(() => generateId());
+
+  const handleSend = async () => {
     if (!input.trim()) return;
 
     setMessages((prev) => [...prev, { role: "user", text: input }]);
-
     setInput("");
+
+    setLoading(true);
+    try {
+      console.log("endpointer enter..");
+
+      const res = await axios.post(`${backendAPI}/chat`, {
+        message: input,
+        conversationId: conversationId,
+      });
+      console.log("here is response from  LLM : ", res.data.reply);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "LLM",
+          text: res.data.reply,
+        },
+      ]);
+    } catch (error) {
+      console.log("api error", error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

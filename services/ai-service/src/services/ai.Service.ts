@@ -160,9 +160,11 @@
 
 // }
 
+
 import dotenv from "dotenv";
 import { tavily } from "@tavily/core";
 import { Groq } from "groq-sdk";
+import NodeCache from "node-cache";
 
 dotenv.config();
 
@@ -174,13 +176,16 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY!,
 });
 
+/* Memory */
+const cache = new NodeCache();
+
 const tools = [
   {
     type: "function",
     function: {
       name: "webSearch",
       description:
-        "Search the web for real-time or latest information like news, weather, trends, stock prices.",
+        "Search the web for real-time information like news, weather, trends, stock prices.",
       parameters: {
         type: "object",
         properties: {
@@ -195,98 +200,122 @@ const tools = [
   },
 ];
 
-//  Generate function (main AI)
-export async function generate(userMessage: string): Promise<string> {
+/* Main AI Function */
+
+export async function generate(
+  userMessage: string,
+  conversationId : any
+): Promise<string> {
+
   try {
-    // create fresh message array per request
-    const messages: any[] = [
-      {
-        role: "system",
-        content: `
-         You are the Marvel Multiverse AI.
-        Default personality is JARVIS.
 
-        You can switch personalities between:
-        - JARVIS
-        - Loki
-        - Thor
-        - Captain America
-        - Hulk
-        - Spider-Man
-        - Captain Marvel
-        - Doctor Strange
-        - Tony Stark
+    /* Get previous conversation from cache */
+    let messages: any = cache.get(conversationId);
 
-        Only switch when user explicitly says:
-        "switch to <character name>" and don't say Greetings 
+    /* If no conversation exists, create new one */
+    if (!messages) {
+      messages = [
+        {
+          role: "system",
+          content: `
+You are the Marvel Multiverse AI.
+Default personality is JARVIS.
 
-        If user says "switch to Tony Stark", change personality.
-        If user asks about real-world data, call webSearch.
-        Current Datetime: ${new Date().toUTCString()}
-        `,
-      },
-      {
-        role: "user",
-        content: userMessage,
-      },
-    ];
+You can switch personalities between:
+- JARVIS
+- Loki
+- Thor
+- Captain America
+- Hulk
+- Spider-Man
+- Captain Marvel
+- Doctor Strange
+- Tony Stark
 
-    //  first llm call
+Only switch when user explicitly says:
+"switch to <character name>"
 
+If user asks about real-world data, call webSearch.
+
+Current Datetime: ${new Date().toUTCString()}
+          `,
+        },
+      ];
+    }
+
+    /* Always add the new user message */
+    messages.push({
+      role: "user",
+      content: userMessage,
+    });
+
+    /*  First LLM Call */
     const completion = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
-      temperature: 1,
-      tool_choice: "auto",
+      temperature: 0.7,
       messages,
       tools,
+      tool_choice: "auto",
     });
 
     const responseMessage = completion.choices[0].message;
+
+    /*  Add assistant response */
     messages.push(responseMessage);
 
+    /*  Check if tool was called */
     const toolCalls = responseMessage.tool_calls;
 
-    //  If no tool Call → Return
+    if (toolCalls) {
+      for (const tool of toolCalls) {
 
-    if (!toolCalls) {
-      return responseMessage.content || "";
-    }
+        if (tool.function.name === "webSearch") {
 
-    //  handle tool calls
+          const params = JSON.parse(tool.function.arguments);
 
-    for (const tool of toolCalls) {
-      const functionName = tool.function.name;
-      const funcParams = JSON.parse(tool.function.arguments);
+          const toolResult = await webSearch(params);
 
-      if (functionName === "webSearch") {
-        const toolResult = await webSearch(funcParams);
-
-        messages.push({
-          role: "tool",
-          tool_call_id: tool.id,
-          name: functionName,
-          content: toolResult,
-        });
+          // Add tool result into conversation
+          messages.push({
+            role: "tool",
+            tool_call_id: tool.id,
+            name: "webSearch",
+            content: toolResult,
+          });
+        }
       }
+
+      /* ffinal LLM Call After Tool Result */
+      const finalCompletion = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages,
+      });
+
+      const finalMessage = finalCompletion.choices[0].message;
+
+      messages.push(finalMessage);
+
+      /* Save updated conversation */
+      cache.set(conversationId, messages);
+
+      return finalMessage.content || "";
     }
 
-    //  final LLM Call after tool
+    /* Save normal conversation */
+    cache.set(conversationId, messages);
 
-    const finalResponse = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages,
-    });
+    return responseMessage.content || "";
 
-    return finalResponse.choices[0].message.content || "";
   } catch (error) {
     console.error("ERROR OCCURRED:", error);
     throw error;
   }
 }
 
-//  web search tool
+/* Web search tool */
 
 export async function webSearch({ query }: { query: string }) {
+
   const res = await tvly.search(query);
 
   if (!res.results || res.results.length === 0) {
